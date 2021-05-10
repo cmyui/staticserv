@@ -16,6 +16,7 @@ REQUIRED_HEADERS = ('User-Agent', 'Token', 'Content-Type')
 SHAREX_VER_RGX = re.compile(r'^ShareX/(?:\d+\.\d+\.\d+)$')
 SHIT_PATH = Path.cwd() / 'shit'
 DISAPPOINTED = (Path.cwd() / 'disappointed.jpeg').read_bytes()
+FAVICON = (Path.cwd() / 'favicon.ico').read_bytes()
 
 TOKENS = { # TODO: db or smth
     'w8y9W50f5RxPJyw1fXxWrUsgBwq7KT4Mwiaq5buscwM',
@@ -23,6 +24,11 @@ TOKENS = { # TODO: db or smth
 
 app = Server(name='static file server', debug=True)
 domain = Domain('i.cmyui.xyz')
+
+@domain.route('/favicon.ico')
+async def favicon(conn: Connection) -> bytes:
+    conn.resp_headers['Content-Type'] = 'image/x-icon'
+    return FAVICON
 
 @domain.route(re.compile(r'^/[^\.]+\.(?:jpeg|png)$'))
 @ratelimit(period=60, max_count=20, default_return=DISAPPOINTED)
