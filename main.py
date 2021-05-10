@@ -84,6 +84,10 @@ async def upload(conn: Connection) -> Optional[bytes]:
     ):
         return (400, b'') # invalid request
 
+    filesize = int(conn.headers['Content-Length'])
+    if not 0x40 <= filesize < 0x400 ** 3: # 64B - 1GB
+        return (400, b'') # filesize invalid
+
     global DATABASE
 
     user = await DATABASE.fetch(
@@ -95,23 +99,49 @@ async def upload(conn: Connection) -> Optional[bytes]:
     if user is None:
         return (401, b'') # unauthorized
 
-    # check file headers
+    # ensure at least some basic
+    # file signatures are correct
+    # TODO: more file formats & signature checks
     if (
+        conn.headers['Content-Type'] == 'image/png' and
+        conn.body[:8] == b'\x89PNG\r\n\x1a\n' and
+        conn.body[-8:] == b'IEND\xaeB`\x82'
+    ):
+        ext = 'png'
+    elif (
         conn.headers['Content-Type'] == 'image/jpeg' and
-        conn.body[6:10] in (b'JFIF', b'Exif')
+        (
+            (     # jfif, jpe, jpeg, jpg graphics file
+                conn.body[:4] == b'\xff\xd8\xff\xe0' and
+                conn.body[6:11] == b'JFIF\x00'
+            ) or ( # exif digital jpg
+                conn.body[:4] == b'\xff\xd8\xff\xe1' and
+                conn.body[6:11] == b'Exif\x00'
+            ) or ( # spiff still picture jpg
+                conn.body[:4] == b'\xff\xd8\xff\xe8' and
+                conn.body[6:12] == b'SPIFF\x00'
+            )
+        ) and
+        conn.body[-2:] == b'\xff\xd9'
     ):
         ext = 'jpeg'
     elif (
-        conn.headers['Content-Type'] == 'image/png' and
-        conn.body.startswith(b'\211PNG\r\n\032\n')
+        conn.headers['Content-Type'] == 'image/gif' and
+        conn.body[:6] in (b'GIF87a', b'GIF89a') and
+        conn.body[-2:] == b'\x00\x3b'
     ):
-        ext = 'png'
-    else: # ^ TODO more
+        ext = 'gif'
+    elif ( # TODO: deeper?
+        conn.headers['Content-Type'] == 'video/mp4' and
+        conn.body[4:8] == b'ftyp' and
+        conn.body[8:12] in (b'avc1', b'iso2', b'isom', b'mmp4', b'mp41',
+                            b'mp42', b'mp71', b'msnv', b'ndas', b'ndsc',
+                            b'ndsh', b'ndsm', b'ndsp', b'ndss', b'ndxc',
+                            b'ndxh', b'ndxm', b'ndxp', b'ndxs')
+    ):
+        ext = 'mp4'
+    else:
         return (400, b'') # invalid file type
-
-    filesize = int(conn.headers['Content-Length'])
-    if filesize > 1024 ** 3: # 1GB
-        return (400, b'') # filesize too large
 
     # generate a random non-existent filename
     num_chars = secrets.randbelow(9) + 8 # 8-16
