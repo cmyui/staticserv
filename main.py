@@ -107,9 +107,7 @@ async def upload(conn: Connection) -> Optional[bytes]:
     ):
         ext = 'png'
     else: # ^ TODO more
-        # limit types for regular users.
-        if not user['priv'] & Privileges.DEVELOPMENT:
-            return (400, b'') # invalid file type
+        return (400, b'') # invalid file type
 
     filesize = int(conn.headers['Content-Length'])
     if filesize > 1024 ** 3: # 1GB
