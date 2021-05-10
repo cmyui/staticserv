@@ -21,7 +21,7 @@ TOKENS = { # TODO: db or smth
     'w8y9W50f5RxPJyw1fXxWrUsgBwq7KT4Mwiaq5buscwM',
 }
 
-app = Server()
+app = Server(name='static file server', debug=True)
 domain = Domain('i.cmyui.xyz')
 
 @domain.route(re.compile(r'^/[^\.]+\.(?:jpeg|png)$'))
@@ -73,8 +73,6 @@ async def upload(conn: Connection) -> Optional[bytes]:
             break
 
     new_file.write_bytes(conn.body)
-    log(f'{new_file.name} uploaded.', Ansi.LCYAN)
-
     return (200, f'https://i.cmyui.xyz/{new_file.name}'.encode())
 
 if __name__ == '__main__':
