@@ -18,10 +18,13 @@ from cmyui.web import Domain
 from cmyui.web import ratelimit
 from cmyui.web import Server
 
-DATABASE: AsyncSQLPool
+WebResponse = Union[bytes, tuple[int, bytes]]
+
+# constants
+
 import config as CONFIG
 
-WebResponse = Union[bytes, tuple[int, bytes]]
+SQL_DB: AsyncSQLPool
 
 STATIC_PATH = Path.cwd() / 'static'
 
@@ -30,8 +33,7 @@ SHAREX_VER_RGX = re.compile(r'^ShareX/(?P<ver>\d+\.\d+\.\d+)$')
 DISAPPOINTED = (Path.cwd() / 'disappointed.jpeg').read_bytes()
 FAVICON = (Path.cwd() / 'favicon.ico').read_bytes()
 
-app = Server(name='static file server', debug=True)
-domain = Domain('i.cmyui.xyz')
+# supported filetype checks
 
 SUPPORTED_FILES = {}
 
@@ -104,6 +106,8 @@ def psd_condition(body: bytes) -> bool:
 def hdr_condition(body: bytes) -> bool:
     return body[:11] == b'#?RADIANCE\n'
 
+# helper functions and such
+
 BYTE_ORDER_SUFFIXES = ['B', 'KB', 'MB', 'GB', 'TB',
                        'PB', 'EB', 'ZB', 'YT']
 def fmt_bytes(n: Union[int, float]) -> str:
@@ -122,11 +126,17 @@ def pymysql_encode(conv: Callable) -> Callable:
 
 escape_enum = lambda val, _: str(int(val)) # used with pymysql_encode
 
+# user privileges
+
 @pymysql_encode(escape_enum)
 class Privileges(IntFlag):
     ACTIVE = 1 << 0      # unbanned, can use the service
     MANAGEMENT = 1 << 1  # has moderative/administrative access
     DEVELOPMENT = 1 << 2 # has full access to all features
+
+# create server/domain & add our routes to it
+app = Server(name='static file server', debug=True)
+domain = Domain('i.cmyui.xyz')
 
 @domain.route('/favicon.ico')
 async def favicon(conn: Connection) -> bytes:
@@ -166,9 +176,9 @@ async def upload(conn: Connection) -> Optional[WebResponse]:
     if not 0x40 <= filesize < 0x400 ** 3: # 64B - 1GB
         return (400, b'') # filesize invalid
 
-    global DATABASE
+    global SQL_DB
 
-    user = await DATABASE.fetch(
+    user = await SQL_DB.fetch(
         'SELECT id, name, priv FROM users '
         'WHERE token = %s AND priv & 1',
         [conn.headers['Token']]
@@ -198,7 +208,7 @@ async def upload(conn: Connection) -> Optional[WebResponse]:
 
     new_file.write_bytes(conn.body)
 
-    await DATABASE.execute(
+    await SQL_DB.execute(
         'INSERT INTO uploads '
         '(name, user_id, size) '
         'VALUES (%s, %s, %s)',
@@ -210,14 +220,14 @@ async def upload(conn: Connection) -> Optional[WebResponse]:
     return f'https://i.cmyui.xyz/{new_file.name}'.encode()
 
 async def before_serving() -> None:
-    global DATABASE
-    DATABASE = AsyncSQLPool()
-    await DATABASE.connect(CONFIG.mysql)
+    global SQL_DB
+    SQL_DB = AsyncSQLPool()
+    await SQL_DB.connect(CONFIG.mysql)
 
 async def after_serving() -> None:
-    global DATABASE
-    if DATABASE is not None:
-        await DATABASE.close()
+    global SQL_DB
+    if SQL_DB is not None:
+        await SQL_DB.close()
 
 if __name__ == '__main__':
     app.add_domain(domain)
