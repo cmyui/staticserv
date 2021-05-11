@@ -30,6 +30,75 @@ FAVICON = (Path.cwd() / 'favicon.ico').read_bytes()
 app = Server(name='static file server', debug=True)
 domain = Domain('i.cmyui.xyz')
 
+SUPPORTED_FILES = {}
+
+def register_filetype(mime_type: str, extension: str) -> Callable:
+    def wrapper(condition: Callable) -> None:
+        SUPPORTED_FILES[mime_type] = {
+            'extension': extension,
+            'condition': condition
+        }
+        return condition
+    return wrapper
+
+@register_filetype('image/png', 'png')
+def png_condition(body: bytes) -> bool:
+    return (
+        body[:8] == b'\x89PNG\r\n\x1a\n' and
+        body[-8:] == b'IEND\xaeB`\x82'
+    )
+
+@register_filetype('image/jpeg', 'jpeg')
+def jpeg_condition(body: bytes) -> bool:
+    return (
+        # jfif, jpe, jpeg, jpg graphics file
+        body[:4] == b'\xff\xd8\xff\xe0' and
+        body[6:11] == b'JFIF\x00'
+    ) or (
+        # exif digital jpg
+        body[:4] == b'\xff\xd8\xff\xe1' and
+        body[6:11] == b'Exif\x00'
+    ) or (
+        # spiff still picture jpg
+        body[:4] == b'\xff\xd8\xff\xe8' and
+        body[6:12] == b'SPIFF\x00'
+    )
+
+@register_filetype('image/gif', 'gif')
+def gif_condition(body: bytes) -> bool:
+    return (
+        body[:6] in (b'GIF87a', b'GIF89a') and
+        body[-2:] == b'\x00\x3b'
+    )
+
+@register_filetype('image/bmp', 'bmp')
+def bmp_condition(body: bytes) -> bool:
+    return body[:2] == b'\x42\x4d'
+
+@register_filetype('video/mp4', 'mp4')
+def mp4_condition(body: bytes) -> bool:
+    return (
+        body[4:8] == b'ftyp' and
+        body[8:12] in (
+            b'avc1', b'iso2', b'isom', b'mmp4', b'mp41',
+            b'mp42', b'mp71', b'msnv', b'ndas', b'ndsc',
+            b'ndsh', b'ndsm', b'ndsp', b'ndss', b'ndxc',
+            b'ndxh', b'ndxm', b'ndxp', b'ndxs'
+        )
+    )
+
+@register_filetype('video/webm', 'webm')
+def webm_condition(body: bytes) -> bool:
+    return body[:4] == b'\x1aE\xdf\xa3'
+
+@register_filetype('image/vnd.adobe.photoshop', 'psd')
+def psd_condition(body: bytes) -> bool:
+    return body[:4] == b'8BPS'
+
+@register_filetype('image/vnd.radiance', 'hdr')
+def hdr_condition(body: bytes) -> bool:
+    return body[:11] == b'#?RADIANCE\n'
+
 def fmt_bytes(n: int) -> str:
     suffixes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
     for suffix in suffixes:
@@ -99,67 +168,15 @@ async def upload(conn: Connection) -> Optional[bytes]:
     if user is None:
         return (401, b'') # unauthorized
 
-    # ensure at least some basic
-    # file signatures are correct
-    # TODO: more file formats & signature checks
-    if (
-        conn.headers['Content-Type'] == 'image/png' and
-        conn.body[:8] == b'\x89PNG\r\n\x1a\n' and
-        conn.body[-8:] == b'IEND\xaeB`\x82'
-    ):
-        ext = 'png'
-    elif (
-        conn.headers['Content-Type'] == 'image/jpeg' and
-        (
-            (     # jfif, jpe, jpeg, jpg graphics file
-                conn.body[:4] == b'\xff\xd8\xff\xe0' and
-                conn.body[6:11] == b'JFIF\x00'
-            ) or ( # exif digital jpg
-                conn.body[:4] == b'\xff\xd8\xff\xe1' and
-                conn.body[6:11] == b'Exif\x00'
-            ) or ( # spiff still picture jpg
-                conn.body[:4] == b'\xff\xd8\xff\xe8' and
-                conn.body[6:12] == b'SPIFF\x00'
-            )
-        ) and
-        conn.body[-2:] == b'\xff\xd9'
-    ):
-        ext = 'jpeg'
-    elif (
-        conn.headers['Content-Type'] == 'image/gif' and
-        conn.body[:6] in (b'GIF87a', b'GIF89a') and
-        conn.body[-2:] == b'\x00\x3b'
-    ):
-        ext = 'gif'
-    elif ( # TODO: deeper?
-        conn.headers['Content-Type'] == 'video/mp4' and
-        conn.body[4:8] == b'ftyp' and
-        conn.body[8:12] in (b'avc1', b'iso2', b'isom', b'mmp4', b'mp41',
-                            b'mp42', b'mp71', b'msnv', b'ndas', b'ndsc',
-                            b'ndsh', b'ndsm', b'ndsp', b'ndss', b'ndxc',
-                            b'ndxh', b'ndxm', b'ndxp', b'ndxs')
-    ):
-        ext = 'mp4'
-    elif (
-        conn.headers['Content-Type'] == 'video/webm' and
-        conn.body[:4] == b'\x1aE\xdf\xa3'
-    ):
-        ext = 'webm'
-    elif (
-        conn.headers['Content-Type'] == 'image/bmp' and
-        conn.body[:2] == b'\x42\x4d'
-    ):
-        ext = 'bmp'
-    elif (
-        conn.headers['Content-Type'] == 'image/vnd.adobe.photoshop' and
-        conn.body[:4] == b'8BPS'
-    ):
-        ext = 'psd'
-    elif (
-        conn.headers['Content-Type'] == 'image/vnd.radiance' and
-        conn.body[:11] == b'#?RADIANCE\n'
-    ):
-        ext = 'hdr'
+    mime_type = conn.headers['Content-Type']
+    if mime_type not in SUPPORTED_FILES:
+        return (400, b'') # unsupported filetype
+
+    filetype = SUPPORTED_FILES[mime_type]
+
+    if filetype['condition'](conn.body):
+        # file contents match the mime type
+        ext = filetype['extension']
     else:
         return (400, b'') # invalid file type
 
@@ -180,7 +197,7 @@ async def upload(conn: Connection) -> Optional[bytes]:
     )
 
     user_str = '<{name} ({id})>'.format(**user)
-    log(f"{user_str} uploaded a {fmt_bytes(filesize)} {ext}", Ansi.LCYAN)
+    log(f"{user_str} uploaded a {fmt_bytes(filesize)} {ext} file.", Ansi.LCYAN)
     return f'https://i.cmyui.xyz/{new_file.name}'.encode()
 
 async def before_serving() -> None:
