@@ -7,6 +7,8 @@ from enum import IntFlag
 from pathlib import Path
 from typing import Callable
 from typing import Optional
+from typing import Type
+from typing import Union
 
 from cmyui.logging import Ansi
 from cmyui.logging import log
@@ -16,12 +18,13 @@ from cmyui.web import Domain
 from cmyui.web import ratelimit
 from cmyui.web import Server
 
-DATABASE: Optional[AsyncSQLPool] = None
+DATABASE: AsyncSQLPool
 import config as CONFIG
+
+WebResponse = Union[bytes, tuple[int, bytes]]
 
 STATIC_PATH = Path.cwd() / 'static'
 
-REQUIRED_HEADERS = ('User-Agent', 'Token', 'Content-Type')
 SHAREX_VER_RGX = re.compile(r'^ShareX/(?P<ver>\d+\.\d+\.\d+)$')
 
 DISAPPOINTED = (Path.cwd() / 'disappointed.jpeg').read_bytes()
@@ -33,7 +36,7 @@ domain = Domain('i.cmyui.xyz')
 SUPPORTED_FILES = {}
 
 def register_filetype(mime_type: str, extension: str) -> Callable:
-    def wrapper(condition: Callable) -> None:
+    def wrapper(condition: Callable) -> Callable:
         SUPPORTED_FILES[mime_type] = {
             'extension': extension,
             'condition': condition
@@ -45,7 +48,7 @@ def register_filetype(mime_type: str, extension: str) -> Callable:
 def png_condition(body: bytes) -> bool:
     return (
         body[:8] == b'\x89PNG\r\n\x1a\n' and
-        body[-8:] == b'IEND\xaeB`\x82'
+        body[-8:] == b'\x49END\xae\x42\x60\x82'
     )
 
 @register_filetype('image/jpeg', 'jpeg')
@@ -75,21 +78,23 @@ def gif_condition(body: bytes) -> bool:
 def bmp_condition(body: bytes) -> bool:
     return body[:2] == b'\x42\x4d'
 
+MP4_TYPES = (
+    b'avc1', b'iso2', b'isom', b'mmp4',
+    b'mp41', b'mp42', b'mp71', b'msnv',
+    b'ndas', b'ndsc', b'ndsh', b'ndsm',
+    b'ndsp', b'ndss', b'ndxc', b'ndxh',
+    b'ndxm', b'ndxp', b'ndxs'
+)
 @register_filetype('video/mp4', 'mp4')
 def mp4_condition(body: bytes) -> bool:
     return (
         body[4:8] == b'ftyp' and
-        body[8:12] in (
-            b'avc1', b'iso2', b'isom', b'mmp4', b'mp41',
-            b'mp42', b'mp71', b'msnv', b'ndas', b'ndsc',
-            b'ndsh', b'ndsm', b'ndsp', b'ndss', b'ndxc',
-            b'ndxh', b'ndxm', b'ndxp', b'ndxs'
-        )
+        body[8:12] in MP4_TYPES
     )
 
 @register_filetype('video/webm', 'webm')
 def webm_condition(body: bytes) -> bool:
-    return body[:4] == b'\x1aE\xdf\xa3'
+    return body[:4] == b'\x1a\x45\xdf\xa3'
 
 @register_filetype('image/vnd.adobe.photoshop', 'psd')
 def psd_condition(body: bytes) -> bool:
@@ -99,17 +104,18 @@ def psd_condition(body: bytes) -> bool:
 def hdr_condition(body: bytes) -> bool:
     return body[:11] == b'#?RADIANCE\n'
 
-def fmt_bytes(n: int) -> str:
-    suffixes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
-    for suffix in suffixes:
+BYTE_ORDER_SUFFIXES = ['B', 'KB', 'MB', 'GB', 'TB',
+                       'PB', 'EB', 'ZB', 'YT']
+def fmt_bytes(n: Union[int, float]) -> str:
+    for suffix in BYTE_ORDER_SUFFIXES:
         if n < 1024:
             break
         n /= 1024 # more to go
     return f'{n:,.2f}{suffix}'
 
-def pymysql_encode(conv: Callable):
+def pymysql_encode(conv: Callable) -> Callable:
     """Decorator to allow for adding to pymysql's encoders."""
-    def wrapper(cls):
+    def wrapper(cls: Type[object]) -> Type[object]:
         pymysql.converters.encoders[cls] = conv
         return cls
     return wrapper
@@ -129,8 +135,8 @@ async def favicon(conn: Connection) -> bytes:
     return FAVICON
 
 @domain.route(re.compile(r'^/[^\.]+\.(?:jpeg|png)$'))
-@ratelimit(period=60, max_count=20, default_return=DISAPPOINTED)
-async def get(conn: Connection) -> Optional[bytes]:
+@ratelimit(period=60, max_count=5, default_return=DISAPPOINTED)
+async def get(conn: Connection) -> Optional[WebResponse]:
     file = STATIC_PATH / conn.path[1:]
     if not file.exists():
         return (404, b'file not found')
@@ -145,10 +151,13 @@ async def get(conn: Connection) -> Optional[bytes]:
     conn.resp_headers['Cache-Control'] = 'public, max-age=86400'
     return file.read_bytes()
 
+REQUIRED_UPLOAD_HEADERS = (
+    'User-Agent', 'Token', 'Content-Type'
+)
 @domain.route('/', methods=['POST'])
-async def upload(conn: Connection) -> Optional[bytes]:
+async def upload(conn: Connection) -> Optional[WebResponse]:
     if not (
-        all(h in conn.headers for h in ('User-Agent', 'Token', 'Content-Type')) and
+        all(h in conn.headers for h in REQUIRED_UPLOAD_HEADERS) and
         SHAREX_VER_RGX.match(conn.headers['User-Agent'])
     ):
         return (400, b'') # invalid request
@@ -174,7 +183,7 @@ async def upload(conn: Connection) -> Optional[bytes]:
 
     filetype = SUPPORTED_FILES[mime_type]
 
-    if filetype['condition'](conn.body):
+    if filetype['condition'](conn.body): # type: ignore
         # file contents match the mime type
         ext = filetype['extension']
     else:
