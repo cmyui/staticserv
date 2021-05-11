@@ -140,6 +140,26 @@ async def upload(conn: Connection) -> Optional[bytes]:
                             b'ndxh', b'ndxm', b'ndxp', b'ndxs')
     ):
         ext = 'mp4'
+    elif (
+        conn.headers['Content-Type'] == 'video/webm' and
+        conn.body[:4] == b'\x1aE\xdf\xa3'
+    ):
+        ext = 'webm'
+    elif (
+        conn.headers['Content-Type'] == 'image/bmp' and
+        conn.body[:2] == b'\x42\x4d'
+    ):
+        ext = 'bmp'
+    elif (
+        conn.headers['Content-Type'] == 'image/vnd.adobe.photoshop' and
+        conn.body[:4] == b'8BPS'
+    ):
+        ext = 'psd'
+    elif (
+        conn.headers['Content-Type'] == 'image/vnd.radiance' and
+        conn.body[:11] == b'#?RADIANCE\n'
+    ):
+        ext = 'hdr'
     else:
         return (400, b'') # invalid file type
 
