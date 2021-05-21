@@ -144,7 +144,7 @@ async def favicon(conn: Connection) -> bytes:
     conn.resp_headers['Content-Type'] = 'image/x-icon'
     return FAVICON
 
-@domain.route(re.compile(r'^/[^\.]+\.(?:jpeg|png|gif|bmp|mp4|webm|psd|hdr)$'))
+@domain.route(re.compile(r'^/[\w-]{11,22}\.(?:jpeg|png|gif|bmp|mp4|webm|psd|hdr)$'))
 @ratelimit(period=60, max_count=15, default_return=DISAPPOINTED)
 async def get(conn: Connection) -> Optional[WebResponse]:
     file = STATIC_PATH / conn.path[1:]
