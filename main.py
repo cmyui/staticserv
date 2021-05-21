@@ -28,10 +28,10 @@ SQL_DB: AsyncSQLPool
 
 STATIC_PATH = Path.cwd() / 'static'
 
-SHAREX_VER_RGX = re.compile(r'^ShareX/(?P<ver>\d+\.\d+\.\d+)$')
+SHAREX_UAGENT_RGX = re.compile(r'^ShareX/(?P<ver>\d+\.\d+\.\d+)$')
 
-DISAPPOINTED = (Path.cwd() / 'disappointed.jpeg').read_bytes()
-FAVICON = (Path.cwd() / 'favicon.ico').read_bytes()
+RATELIMITED_PNG = (Path.cwd() / 'disappointed.jpeg').read_bytes()
+FAVICON_PNG = (Path.cwd() / 'favicon.ico').read_bytes()
 
 # supported filetype checks
 
@@ -142,10 +142,10 @@ domain = Domain('i.cmyui.xyz')
 async def favicon(conn: Connection) -> bytes:
     conn.resp_headers['Cache-Control'] = 'public, max-age=604800'
     conn.resp_headers['Content-Type'] = 'image/x-icon'
-    return FAVICON
+    return FAVICON_PNG
 
 @domain.route(re.compile(r'^/[\w-]{11,22}\.(?:jpeg|png|gif|bmp|mp4|webm|psd|hdr)$'))
-@ratelimit(period=60, max_count=15, default_return=DISAPPOINTED)
+@ratelimit(period=60, max_count=15, default_return=RATELIMITED_PNG)
 async def get(conn: Connection) -> Optional[WebResponse]:
     file = STATIC_PATH / conn.path[1:]
     if not file.exists():
@@ -167,8 +167,8 @@ REQUIRED_UPLOAD_HEADERS = (
 @domain.route('/', methods=['POST'])
 async def upload(conn: Connection) -> Optional[WebResponse]:
     if not (
-        all(h in conn.headers for h in REQUIRED_UPLOAD_HEADERS) and
-        SHAREX_VER_RGX.match(conn.headers['User-Agent'])
+        all([h in conn.headers for h in REQUIRED_UPLOAD_HEADERS]) and
+        SHAREX_UAGENT_RGX.match(conn.headers['User-Agent'])
     ):
         return (400, b'') # invalid request
 
@@ -200,9 +200,10 @@ async def upload(conn: Connection) -> Optional[WebResponse]:
         return (400, b'') # invalid file type
 
     # generate a random non-existent filename
-    num_chars = secrets.randbelow(9) + 8 # 8-16
+    num_chars = secrets.randbelow(9) + 8 # 8-16 bytes, so 11-22 chars
     while True:
-        new_file = STATIC_PATH / f'{secrets.token_urlsafe(num_chars)}.{ext}'
+        new_filename = f'{secrets.token_urlsafe(num_chars)}.{ext}'
+        new_file = STATIC_PATH / new_filename
         if not new_file.exists():
             break
 
@@ -212,12 +213,12 @@ async def upload(conn: Connection) -> Optional[WebResponse]:
         'INSERT INTO uploads '
         '(name, user_id, size) '
         'VALUES (%s, %s, %s)',
-        [new_file.name, user['id'], filesize]
+        [new_filename, user['id'], filesize]
     )
 
     user_str = '<{name} ({id})>'.format(**user)
     log(f"{user_str} uploaded a {fmt_bytes(filesize)} {ext} file.", Ansi.LCYAN)
-    return f'https://i.cmyui.xyz/{new_file.name}'.encode()
+    return f'https://i.cmyui.xyz/{new_filename}'.encode()
 
 async def before_serving() -> None:
     global SQL_DB
