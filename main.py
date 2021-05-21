@@ -151,12 +151,12 @@ async def get(conn: Connection) -> Optional[WebResponse]:
     if not file.exists():
         return (404, b'file not found')
 
-    if file.suffix == '.png':
-        conn.resp_headers['Content-Type'] = 'image/png'
-    elif file.suffix == '.jpeg':
-        conn.resp_headers['Content-Type'] = 'image/jpeg'
+    for mime_type, file_info in SUPPORTED_FILES.items():
+        if file.suffix == f".{file_info['extension']}":
+            conn.resp_headers['Content-Type'] = mime_type
+            break
     else:
-        return (400, b'') # impossible atm
+        return (400, b'') # impossible filetype
 
     conn.resp_headers['Cache-Control'] = 'public, max-age=86400'
     return file.read_bytes()
