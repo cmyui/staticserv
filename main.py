@@ -145,7 +145,7 @@ async def favicon(conn: Connection) -> bytes:
     return FAVICON
 
 @domain.route(re.compile(r'^/[^\.]+\.(?:jpeg|png|gif|bmp|mp4|webm|psd|hdr)$'))
-@ratelimit(period=60, max_count=5, default_return=DISAPPOINTED)
+@ratelimit(period=60, max_count=15, default_return=DISAPPOINTED)
 async def get(conn: Connection) -> Optional[WebResponse]:
     file = STATIC_PATH / conn.path[1:]
     if not file.exists():
