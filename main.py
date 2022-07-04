@@ -1,30 +1,35 @@
 #!/usr/bin/env python3.9
 
+from functools import wraps
+import inspect
 import pymysql
 import re
 import secrets
 from enum import IntFlag
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from typing import Optional
 from typing import Type
 from typing import Union
 
+import time
+import timeago
+import geoip2.database
 from cmyui.logging import Ansi
 from cmyui.logging import log
 from cmyui.mysql import AsyncSQLPool
 from cmyui.web import Connection
 from cmyui.web import Domain
-from cmyui.web import ratelimit
 from cmyui.web import Server
 
 WebResponse = Union[bytes, tuple[int, bytes]]
 
 # constants
 
-import config as CONFIG
+import config
 
 SQL_DB: AsyncSQLPool
+GEOLOC_DB = geoip2.database.Reader(Path.cwd() / "GeoLite2-City.mmdb")
 
 STATIC_PATH = Path.cwd() / 'static'
 
@@ -134,6 +139,60 @@ class Privileges(IntFlag):
     MANAGEMENT = 1 << 1  # has moderative/administrative access
     DEVELOPMENT = 1 << 2 # has full access to all features
 
+
+def ratelimit(period: int, max_count: int,
+              default_return: Optional[Any] = None
+             ) -> Callable:
+    """Utility decorator for global ratelimiting."""
+    period = period
+    max_count = max_count
+    default_return = default_return
+
+    last_reset = 0
+    num_calls = 0
+
+    def decorate(f: Callable) -> Callable:
+        # TODO: not an extra 18 lines for 6 char change
+        if inspect.iscoroutinefunction(f):
+            async def wrapper(*args, **kwargs) -> Optional[Any]:
+                nonlocal period, max_count, last_reset, num_calls
+
+                elapsed = time.perf_counter() - last_reset
+                period_remaining = period - elapsed
+
+                if period_remaining <= 0:
+                    num_calls = 0
+                    last_reset = time.perf_counter()
+
+                num_calls += 1
+
+                if num_calls > max_count:
+                    # call ratelimited.
+                    return default_return
+
+                return await f(*args, **kwargs)
+        else:
+            def wrapper(*args, **kwargs) -> Optional[Any]:
+                nonlocal period, max_count, last_reset, num_calls
+
+                elapsed = time.perf_counter() - last_reset
+                period_remaining = period - elapsed
+
+                if period_remaining <= 0:
+                    num_calls = 0
+                    last_reset = time.perf_counter()
+
+                num_calls += 1
+
+                if num_calls > max_count:
+                    # call ratelimited.
+                    return default_return
+
+                return f(*args, **kwargs)
+
+        return wraps(f)(wrapper)
+    return decorate
+
 # create server/domain & add our routes to it
 app = Server(name='static file server', debug=True)
 domain = Domain('i.cmyui.xyz')
@@ -145,7 +204,7 @@ async def favicon(conn: Connection) -> bytes:
     return FAVICON_PNG
 
 @domain.route(re.compile(r'^/[\w-]{11,22}\.(?:jpeg|png|gif|bmp|mp4|webm|psd|hdr)$'))
-@ratelimit(period=60, max_count=15, default_return=RATELIMITED_PNG)
+#@ratelimit(period=60, max_count=15, default_return=RATELIMITED_PNG)
 async def get(conn: Connection) -> Optional[WebResponse]:
     file = STATIC_PATH / conn.path[1:]
     if not file.exists():
@@ -157,6 +216,27 @@ async def get(conn: Connection) -> Optional[WebResponse]:
             break
     else:
         return (400, b'') # impossible filetype
+
+    # resolve ip address
+    if not (ip_addr := conn.headers.get("CF-Connecting-IP")):
+        if ip_forwards := conn.headers.get("X-Forwarded-For"):
+            ip_addr = ip_forwards.split(",")[0]
+        else:
+            if not (ip_addr := conn.headers.get("X-Real-IP")):
+                return (400, b'') # no ip. should i trust socket?
+
+    file_creation_time_ago = timeago.format(
+        date=file.lstat().st_ctime,
+        now=time.time(),
+    )
+
+    ip_geolocation = GEOLOC_DB.city(ip_addr)
+    print() # \n
+    log(
+        f"[{ip_addr} @ {ip_geolocation.city.name} {ip_geolocation.country.iso_code}] "
+        f"fetching {conn.path} (created {file_creation_time_ago})",
+        Ansi.LCYAN
+    )
 
     conn.resp_headers['Cache-Control'] = 'public, max-age=86400'
     return file.read_bytes()
@@ -172,11 +252,12 @@ async def upload(conn: Connection) -> Optional[WebResponse]:
     ):
         return (400, b'') # invalid request
 
+    if conn.body is None:
+        return (400, b'') # no body
+
     filesize = int(conn.headers['Content-Length'])
     if not 0x40 <= filesize < 0x400 ** 3: # 64B - 1GB
         return (400, b'') # filesize invalid
-
-    global SQL_DB
 
     user = await SQL_DB.fetch(
         'SELECT id, name, priv FROM users '
@@ -217,16 +298,16 @@ async def upload(conn: Connection) -> Optional[WebResponse]:
     )
 
     user_str = '<{name} ({id})>'.format(**user)
+    print()
     log(f"{user_str} uploaded a {fmt_bytes(filesize)} {ext} file.", Ansi.LCYAN)
     return f'https://i.cmyui.xyz/{new_filename}'.encode()
 
 async def before_serving() -> None:
     global SQL_DB
     SQL_DB = AsyncSQLPool()
-    await SQL_DB.connect(CONFIG.mysql)
+    await SQL_DB.connect(config.mysql)
 
 async def after_serving() -> None:
-    global SQL_DB
     if SQL_DB is not None:
         await SQL_DB.close()
 
